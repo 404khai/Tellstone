@@ -43,14 +43,17 @@ workloads. Tellstone offers a **lean, modern, memory‑efficient buffer** that:
 
 ### Core Architecture
 
+For a detailed description of the package structure, request flow, and design decisions,
+see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 | Layer | Package | Notes |
 |---|---|---|
 | Binary protocol | `internal/network` | `MsgRequest`/`MsgResponse` frames (`GET`/`SET`/`DEL`, TTL, key, value) |
 | RESP2 protocol | `internal/resp` | Redis‑compatible listener reusing the same engine |
-| Request router | `internal/router` | FNV-1a hash → O(1) shard dispatch |
-| Shard runner | `internal/shard` | Shared-nothing shard: synchronous `Execute()`, per-shard `sync.RWMutex` |
-| Storage engine | `internal/storage` | Single-map engine, TTL eviction via timing wheel |
-| Persistence | `internal/persistence` | Per-shard append-only WAL, zero-alloc write path |
+| Request router | `internal/router` | FNV‑1a hash → O(1) shard dispatch |
+| Shard runner | `internal/shard` | Shared‑nothing shard: synchronous `Execute()`, per‑shard `sync.RWMutex` |
+| Storage engine | `internal/storage` | Single‑map engine, TTL eviction via timing wheel |
+| Persistence | `internal/persistence` | Per‑shard append‑only WAL, zero‑alloc write path |
 | Crypto | `internal/crypto` | Optional ChaCha20‑Poly1305 |
 | Metrics / tracing | `internal/metrics`, `internal/trace` | Prometheus text exporter, OTLP/gRPC tracing |
 
@@ -402,7 +405,8 @@ an SSH tunnel), or browse the raw index at `http://127.0.0.1:6060/debug/pprof/` 
 ## Contributing
 
 Contributions are welcome — especially around networking, replication, persistence, and RESP
-command coverage. Open an issue or start a discussion to share ideas.
+command coverage. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide (DCO sign-off
+required, core principles, workflow).
 
 ---
 

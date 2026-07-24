@@ -1,0 +1,91 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in Tellstone
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below.
+
+  - type: input
+    id: version
+    attributes:
+      label: Tellstone version
+      description: "Output of `tellstone --version` or commit SHA if building from source."
+      placeholder: "e.g. 1.2.3 or abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Protocol
+      description: Which protocol does this bug affect?
+      options:
+        - Binary protocol
+        - RESP2 (Redis-compatible)
+        - Both
+        - N/A
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / Architecture
+      description: "e.g. Ubuntu 24.04 amd64, macOS 15 arm64"
+      placeholder: "OS and architecture"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly and concisely.
+      placeholder: Describe the bug...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Start Tellstone with `task run:resp`
+        2. Run `redis-cli -p 6379 SET foo bar`
+        3. Run `redis-cli -p 6379 GET foo`
+        4. See error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Paste any relevant logs, error messages, or terminal output.
+      render: shell
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: "Paste the flags or environment variables used to start Tellstone."
+      render: bash
+      placeholder: |
+        task run:resp -- --enable-metrics
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help (screenshots, related issues, etc.).

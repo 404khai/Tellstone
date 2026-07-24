@@ -1,0 +1,58 @@
+name: Feature / Enhancement
+description: Suggest a new feature or improvement to Tellstone
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Describe the feature or improvement you'd like.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of Tellstone does this relate to?
+      options:
+        - Binary protocol
+        - RESP2 (Redis-compatible)
+        - Storage engine
+        - Persistence (WAL)
+        - Crypto / encryption
+        - Metrics / observability
+        - Tracing
+        - Configuration
+        - CLI / flags
+        - Build / packaging
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this solve, or why is this improvement valuable?
+      placeholder: "I'm always frustrated when..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you'd like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered other approaches?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, references, screenshots, or related issues.

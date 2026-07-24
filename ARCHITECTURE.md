@@ -1,0 +1,166 @@
+# Architecture
+
+This document describes Tellstone's internal structure and how requests flow through the system.
+
+## Overview
+
+Tellstone is a shared-nothing, in-memory key/value store with two protocol frontends
+(binary and RESP2) feeding into a single storage engine per shard.
+
+```
+                    ┌──────────────────────────────────┐
+                    │          Your Application         │
+                    └───────────┬──────────┬────────────┘
+                                │          │
+                         Binary :9988  RESP :6379
+                                │          │
+                    ┌───────────▼──┐  ┌────▼───────────┐
+                    │ network.Server│  │   resp.Server   │
+                    │   (gnet)     │  │    (gnet)       │
+                    └───────┬──────┘  └───────┬─────────┘
+                            │                 │
+                            └────────┬────────┘
+                                     │
+                            ┌────────▼────────┐
+                            │  router.Router   │
+                            │  FNV-1a → shard  │
+                            └────────┬────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+     ┌────────▼────────┐  ┌────────▼────────┐  ┌────────▼────────┐
+     │   Shard 0       │  │   Shard 1       │  │   Shard N       │
+     │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
+     │ │storage.Engine│ │  │ │storage.Engine│ │  │ │storage.Engine│ │
+     │ │ map[string]  │ │  │ │ map[string]  │ │  │ │ map[string]  │ │
+     │ │ sync.RWMutex │ │  │ │ sync.RWMutex │ │  │ │ sync.RWMutex │ │
+     │ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
+     │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
+     │ │chronometer  │ │  │ │chronometer  │ │  │ │chronometer  │ │
+     │ │(timing wheel)│ │  │ │(timing wheel)│ │  │ │(timing wheel)│ │
+     │ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
+     │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
+     │ │persistence  │ │  │ │persistence  │ │  │ │persistence  │ │
+     │ │(WAL)        │ │  │ │(WAL)        │ │  │ │(WAL)        │ │
+     │ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
+     │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
+     │ │crypto       │ │  │ │crypto       │ │  │ │crypto       │ │
+     │ │(ChaCha20)   │ │  │ │(ChaCha20)   │ │  │ │(ChaCha20)   │ │
+     │ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
+     └─────────────────┘  └─────────────────┘  └─────────────────┘
+```
+
+## Package Reference
+
+### Top-level
+
+| Package | Path | Purpose |
+|---------|------|---------|
+| `cmd/tellstone` | `cmd/tellstone/` | Main entry point. Parses flags, configures runtime (GC, memory limits, profiling), creates and starts the server. |
+| `cmd/benchmark` | `cmd/benchmark/` | Standalone native-binary-protocol load generator with Zipfian key distribution. |
+| `cmd/example/client` | `cmd/example/client/` | Minimal example: SET/GET/DELETE via the binary protocol. |
+| `server` | `server/` | Top-level orchestrator. Creates shards, router, listeners (binary + RESP), metrics server. Handles graceful shutdown. |
+| `config` | `config/` | CLI flags with env-var fallbacks. Includes `ByteSize` parser for human-readable sizes (`16MiB`, `1GiB`). |
+| `logger` | `logger/` | Bridges internal `log.Logger` to Go's `slog`. |
+
+### Internal
+
+| Package | Path | Purpose |
+|---------|------|---------|
+| `app/tellstone` | `internal/app/tellstone/` | Bootstrap: holds logger + config, prints ASCII startup banner. |
+| `log` | `internal/log/` | Logging abstraction. Defines `Logger` interface, `ShardLogger` (injects shard ID), `NoOpLogger`, `GnetAdapter`. |
+| `router` | `internal/router/` | Routes requests to shards via FNV-1a hash. `Dispatch(op, key, value, ttl) → Response`. |
+| `shard` | `internal/shard/` | Shared-nothing shard. Owns an engine + persistence + logger. `Execute()` dispatches GET/SET/DEL. Tracks per-shard atomic metrics. |
+| `storage` | `internal/storage/` | Core engine: `map[string]Item` + `sync.RWMutex`. TTL eviction, memory ceiling, at-rest encryption. Also contains the `Chronometer` timing wheel. |
+| `network` | `internal/network/` | Binary protocol server (gnet, edge-triggered epoll). Zero-alloc decode from ring buffer. Wire format codec. Synchronous `Client`. |
+| `resp` | `internal/resp/` | RESP2 server (gnet). Parses multibulk commands. Supports PING, GET, SET (EX/PX), DEL. Pipelining. |
+| `protocol` | `internal/protocol/` | SQL-text-to-KV translator. Parses `SELECT`/`INSERT`/`DELETE` into operations (experimental/frontend path). |
+| `persistence` | `internal/persistence/` | Per-shard append-only WAL. Crash recovery with replay, tombstone deletes, truncation of corrupted tails. |
+| `crypto` | `internal/crypto/` | ChaCha20-Poly1305 encryption. `EncryptInPlace` / `DecryptInPlace`. Pass-through mode when disabled (zero overhead). |
+| `metrics` | `internal/metrics/` | Prometheus exporter. Per-shard `Collector` + `AggregateCollector` (includes Go runtime stats). Hand-written exposition text. |
+| `trace` | `internal/trace/` | OpenTelemetry wrapper. `Tracer`/`Span` interfaces with `NoOpTracer` (zero-alloc) and `OTelTracer` (OTLP/gRPC). |
+| `version` | `internal/version/` | Build-time version/commit/date via `-ldflags`. |
+
+## Request Flow
+
+### Binary Protocol (port 9988)
+
+1. Client connects via TCP (gnet `OnOpen` assigns connection to a shard for metrics tracking).
+2. `network.Server.OnTraffic` fires on incoming data (edge-triggered epoll).
+3. `Decode()` parses the frame directly from gnet's ring buffer — zero heap allocations.
+   - Frame: `[4B length][1B type][1B op][2B keyLen][8B TTL][key][value]`
+4. `server.networkHandler()` dispatches:
+   - `MsgPing` → returns `MsgPong`
+   - `MsgRequest` with OpGet/OpSet/OpDelete → calls `router.Dispatch()`
+5. `router.Dispatch()` hashes the key with FNV-1a, selects shard: `sid = FNV-1a(key) % numShards`.
+6. `shard.Execute()` runs synchronously:
+   - **GET**: `engine.Get(key)` → lazy expiry check → decrypt if crypto enabled
+   - **SET**: `engine.Set(key, value, ttl)` → WAL write if persistence enabled → `chronometer.Register()` if TTL > 0
+   - **DEL**: WAL tombstone if persistence enabled → `engine.Delete(key)`
+7. Response flows back up, `Write()` sends it (fast-path coalescing for payloads < 512 bytes).
+
+### RESP2 Protocol (port 6379, optional)
+
+1. Redis client connects via TCP (gnet).
+2. `resp.Server.OnTraffic` fires.
+3. `Parse()` reads multibulk frames directly from the buffer — zero allocations.
+4. Commands dispatched in a loop (all complete commands in one `OnTraffic` are batched):
+   - `PING` → `+PONG`
+   - `GET key` → `store.Get(key)`
+   - `SET key val [EX s|PX ms]` → `store.Set(key, val, ttl)`
+   - `DEL key [key ...]` → `store.Delete(key)` per key
+   - `COMMAND` → empty array (Redis tooling compatibility)
+5. `server.RouterStore` wraps `router.Dispatch()` to satisfy the `Store` interface.
+6. Same shard path as binary protocol.
+
+## Key Design Decisions
+
+### Shared-Nothing Sharding
+
+Each shard owns a single `map[string]Item` + `sync.RWMutex`. Keys are pinned to a shard
+via FNV-1a hashing, so the lock is almost never contended. Default shard count equals
+`runtime.NumCPU()`. No cross-shard coordination, no channel round-trips.
+
+### Zero-Allocation Hot Path
+
+- `Decode()` and `Parse()` slice directly into gnet's ring buffer (no copies).
+- Request buffers use stack-allocated `[N]byte` arrays.
+- `Write()` coalesces header + payload under 512 bytes into a single buffer.
+- GC is disabled by default (`GOGC=-1`), with `debug.SetMemoryLimit` as a safety valve.
+
+### Timing Wheel Eviction
+
+Instead of per-key timers, a circular timing wheel (`Chronometer`) groups keys into
+configurable slots (default 256). Per-slot locks are cache-line-padded (`[56]byte`) to
+prevent false sharing. A background goroutine advances the wheel each tick, batch-deleting
+expired keys. Registration is append-only and O(1).
+
+### Opt-In Features
+
+Every optional feature is disabled by default and has zero overhead when off:
+
+| Feature | Flag | Default |
+|---------|------|---------|
+| RESP protocol | `--enable-resp` | off |
+| Encryption | `--enable-encryption` | off |
+| Metrics | `--enable-metrics` | off |
+| Persistence | `--enable-persistence` | off |
+| Tracing | `--trace-ratio 0` | off |
+
+### Event-Driven Networking
+
+Both protocol servers use **gnet** (edge-triggered epoll), not `net.Conn` per-goroutine.
+This gives Linux-level performance with multi-reactor multicore support
+(`gnet.WithMulticore(true)`).
+
+### Persistence (WAL)
+
+Per-shard append-only write-ahead log. Writes are serialized under a per-file mutex and
+fsynced after every record. On crash recovery, truncated/corrupted tails are detected
+and the file is truncated to the last valid offset. Tombstone records (delete markers)
+use a sentinel TTL of `math.MinInt64`.
+
+### Encryption
+
+ChaCha20-Poly1305 with a 32-byte key. Every value is encrypted on SET (nonce + ciphertext +
+auth tag). Decryption happens lazily on GET. When disabled, pass-through mode means zero overhead.

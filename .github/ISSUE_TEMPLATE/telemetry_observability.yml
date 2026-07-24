@@ -1,0 +1,64 @@
+name: Telemetry / Observability
+description: Report an issue or request an improvement related to metrics, tracing, or logging
+labels: ["observability", "telemetry"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for issues related to Prometheus metrics, OpenTelemetry tracing, or logging.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Prometheus metrics
+        - OpenTelemetry tracing
+        - Structured logging
+        - Dashboard / visualization
+        - Alerting rules
+        - Missing metric / span
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Tellstone version
+      placeholder: "e.g. 1.2.3 or abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the issue or improvement request.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current behavior
+      description: What is currently happening with the telemetry/observability?
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: What should happen instead?
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: "Paste the flags or env vars related to observability (e.g. --enable-metrics, --trace-ratio)."
+      render: bash
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots of dashboards, sample metric outputs, trace spans, etc.
