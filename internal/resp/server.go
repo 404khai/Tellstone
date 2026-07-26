@@ -6,6 +6,7 @@ Description: Optional gnet event-loop server speaking RESP2, reusing the shared 
 via a small Store interface. Supports PING, GET, SET (with optional EX/PX), and DEL; unknown
 commands return an error without dropping the connection. Exists so Tellstone can be driven by
 standard Redis tooling (redis-benchmark, memtier_benchmark) for cross-system comparison.
+Supports optional TLS 1.3 transport encryption via the internal TLS library.
 
 Authors:
 
@@ -23,6 +24,7 @@ import (
 
 	"github.com/Saxy/Tellstone/internal/log"
 	"github.com/Saxy/Tellstone/internal/shard"
+	tlslib "github.com/Saxy/Tellstone/internal/tls"
 	"github.com/panjf2000/gnet/v2"
 )
 
@@ -37,17 +39,21 @@ type Store interface {
 // connState holds per-connection scratch buffers reused across OnTraffic calls so the hot
 // path stays allocation-free, plus the assigned shard index for per-shard metrics.
 type connState struct {
-	out     []byte
-	args    [][]byte
-	shardID int
+	out               []byte
+	args              [][]byte
+	shardID           int
+	tlsConn           *tlslib.Conn
+	readBuf           []byte
+	handshakeDeadline time.Time
 }
 
 // Server is an edge-triggered RESP2 listener backed by gnet.
 type Server struct {
 	gnet.BuiltinEventEngine
-	addr   string
-	store  Store
-	logger log.Logger
+	addr      string
+	store     Store
+	logger    log.Logger
+	tlsConfig *tlslib.Config
 	// eng and ready let Shutdown reach the running gnet engine: OnBoot fires once the event
 	// loop is accepting connections and hands us the Engine handle we need to stop it; ready
 	// is closed at that point so a concurrent Shutdown call can block until it's safe to stop.
@@ -64,16 +70,18 @@ type Server struct {
 
 // NewServer creates a RESP server bound to addr that dispatches commands to store.
 // shards is optional — if nil, per-shard metrics are not tracked.
-func NewServer(addr string, store Store, shards []*shard.Shard, logger log.Logger) *Server {
+// tlsCfg is optional — if nil, plaintext TCP is used.
+func NewServer(addr string, store Store, shards []*shard.Shard, logger log.Logger, tlsCfg *tlslib.Config) *Server {
 	if logger == nil {
 		logger = log.NewNoOpLogger()
 	}
 	return &Server{
-		addr:   addr,
-		store:  store,
-		shards: shards,
-		logger: logger,
-		ready:  make(chan struct{}),
+		addr:      addr,
+		store:     store,
+		shards:    shards,
+		logger:    logger,
+		tlsConfig: tlsCfg,
+		ready:     make(chan struct{}),
 	}
 }
 
@@ -114,11 +122,18 @@ func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 		s.shards[sid].IncConnectedClients()
 		s.shards[sid].IncTotalConnections()
 	}
-	c.SetContext(&connState{
+	st := &connState{
 		out:     make([]byte, 0, 4096),
 		args:    make([][]byte, 0, 8),
 		shardID: shardID,
-	})
+	}
+	if s.tlsConfig != nil {
+		adapter := tlslib.NewGnetConnAdapter(c)
+		st.tlsConn = tlslib.Server(adapter, s.tlsConfig)
+		st.readBuf = make([]byte, 0, 4096)
+		st.handshakeDeadline = time.Now().Add(10 * time.Second)
+	}
+	c.SetContext(st)
 	return nil, gnet.None
 }
 
@@ -139,6 +154,99 @@ func (s *Server) OnTraffic(c gnet.Conn) gnet.Action {
 		st = &connState{out: make([]byte, 0, 4096), args: make([][]byte, 0, 8)}
 		c.SetContext(st)
 	}
+
+	if st.tlsConn != nil {
+		if !st.tlsConn.HandshakeCompleted() && time.Now().After(st.handshakeDeadline) {
+			return gnet.Close
+		}
+		return s.onTrafficTLS(c, st)
+	}
+	return s.onTrafficPlaintext(c, st)
+}
+
+// onTrafficTLS reads decrypted application data from the TLS connection,
+// parses RESP frames, and writes encrypted responses.
+const maxTLSReadBuf = 64 << 20 // 64 MB — hard ceiling for a single RESP request over TLS.
+
+func (s *Server) onTrafficTLS(c gnet.Conn, st *connState) gnet.Action {
+	for {
+		if len(st.readBuf) == cap(st.readBuf) {
+			if cap(st.readBuf) >= maxTLSReadBuf {
+				return gnet.Close
+			}
+			newCap := cap(st.readBuf) * 2
+			if newCap > maxTLSReadBuf {
+				newCap = maxTLSReadBuf
+			}
+			grown := make([]byte, len(st.readBuf), newCap)
+			copy(grown, st.readBuf)
+			st.readBuf = grown
+		}
+		n, err := st.tlsConn.Read(st.readBuf[len(st.readBuf):cap(st.readBuf)])
+		if n > 0 {
+			st.readBuf = st.readBuf[:len(st.readBuf)+n]
+			if action := s.handleDecryptedResp(st, c); action != gnet.None {
+				return action
+			}
+		}
+		if err != nil {
+			if errors.Is(err, tlslib.ErrNotEnough) {
+				return gnet.None
+			}
+			return gnet.Close
+		}
+	}
+}
+
+// handleDecryptedResp parses RESP commands from decrypted plaintext and
+// writes encrypted responses through the TLS connection. It returns gnet.Close
+// on protocol or write errors so the caller propagates the close.
+func (s *Server) handleDecryptedResp(st *connState, c gnet.Conn) gnet.Action {
+	st.out = st.out[:0]
+	consumed := 0
+	for consumed < len(st.readBuf) {
+		args, n, perr := Parse(st.readBuf[consumed:], st.args)
+		if perr != nil {
+			if errors.Is(perr, errIncomplete) {
+				break
+			}
+			atomic.AddUint64(&s.protocolErrors, 1)
+			if s.logger.Enabled(log.LevelWarn) {
+				s.logger.Log(log.LevelWarn, "resp: malformed frame; closing connection",
+					log.String("remote_addr", c.RemoteAddr().String()),
+				)
+			}
+			return gnet.Close
+		}
+		st.args = args[:0]
+		consumed += n
+		st.out = s.dispatch(args, st.out)
+	}
+	if consumed == 0 {
+		return gnet.None
+	}
+	if len(st.out) > 0 {
+		if _, err := st.tlsConn.Write(st.out); err != nil {
+			return gnet.Close
+		}
+		n := uint64(len(st.out))
+		atomic.AddUint64(&s.bytesWritten, n)
+		if st.shardID >= 0 && st.shardID < len(s.shards) {
+			s.shards[st.shardID].AddBytesWritten(n)
+		}
+	}
+	n := uint64(consumed)
+	atomic.AddUint64(&s.bytesRead, n)
+	if st.shardID >= 0 && st.shardID < len(s.shards) {
+		s.shards[st.shardID].AddBytesRead(n)
+	}
+	remaining := copy(st.readBuf, st.readBuf[consumed:])
+	st.readBuf = st.readBuf[:remaining]
+	return gnet.None
+}
+
+// onTrafficPlaintext is the original zero-copy plaintext path.
+func (s *Server) onTrafficPlaintext(c gnet.Conn, st *connState) gnet.Action {
 	buf, err := c.Peek(-1)
 	if err != nil {
 		return gnet.Close
@@ -159,7 +267,7 @@ func (s *Server) OnTraffic(c gnet.Conn) gnet.Action {
 			}
 			return gnet.Close
 		}
-		st.args = args[:0] // reuse the backing array next iteration
+		st.args = args[:0]
 		consumed += n
 		st.out = s.dispatch(args, st.out)
 	}
