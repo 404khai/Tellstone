@@ -26,7 +26,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Saxy/Tellstone/internal/network"
+	"github.com/Saxy/Tellstone/client"
 )
 
 func main() {
@@ -36,18 +36,18 @@ func main() {
 	flag.Parse()
 
 	var (
-		client *network.Client
-		err    error
+		c   *client.Client
+		err error
 	)
 
 	switch *mode {
 	case "plaintext":
 		fmt.Println("[*] Connecting in PLAINTEXT mode...")
-		client, err = network.Dial(*addr, 5*time.Second)
+		c, err = client.Dial(*addr, 5*time.Second)
 
 	case "tls":
 		fmt.Println("[*] Connecting in TLS mode (one-way)...")
-		client, err = network.DialTLS(*addr,
+		c, err = client.DialTLS(*addr,
 			"", "",
 			*certDir+"/ca.crt",
 			5*time.Second,
@@ -55,7 +55,7 @@ func main() {
 
 	case "mtls":
 		fmt.Println("[*] Connecting in mTLS mode (mutual TLS)...")
-		client, err = network.DialTLS(*addr,
+		c, err = client.DialTLS(*addr,
 			*certDir+"/client.crt",
 			*certDir+"/client.key",
 			*certDir+"/ca.crt",
@@ -70,14 +70,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("[-] Connection failed: %v", err)
 	}
-	defer client.Close()
+	defer c.Close()
 	fmt.Printf("[+] Connected to %s via %s\n", *addr, *mode)
 
 	buf := make([]byte, 4*1024)
 
 	// SET
 	fmt.Println("\n--- SET ---")
-	res, err := client.Set([]byte("tls-demo-key"), []byte("hello from TLS client"), 0, buf)
+	res, err := c.Set([]byte("tls-demo-key"), []byte("hello from TLS client"), 0, buf)
 	if err != nil {
 		log.Fatalf("SET failed: %v", err)
 	}
@@ -85,7 +85,7 @@ func main() {
 
 	// GET
 	fmt.Println("\n--- GET ---")
-	res, err = client.Get([]byte("tls-demo-key"), buf)
+	res, err = c.Get([]byte("tls-demo-key"), buf)
 	if err != nil {
 		log.Fatalf("GET failed: %v", err)
 	}
@@ -93,7 +93,7 @@ func main() {
 
 	// DELETE
 	fmt.Println("\n--- DELETE ---")
-	res, err = client.Delete([]byte("tls-demo-key"), buf)
+	res, err = c.Delete([]byte("tls-demo-key"), buf)
 	if err != nil {
 		log.Fatalf("DELETE failed: %v", err)
 	}
@@ -101,7 +101,7 @@ func main() {
 
 	// GET after DELETE (should return NOT_FOUND)
 	fmt.Println("\n--- GET (after delete) ---")
-	res, err = client.Get([]byte("tls-demo-key"), buf)
+	res, err = c.Get([]byte("tls-demo-key"), buf)
 	if err != nil {
 		log.Fatalf("GET failed: %v", err)
 	}
