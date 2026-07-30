@@ -142,11 +142,19 @@ Every option is available as a flag and an environment variable.
 | `--trace-ratio`       | `TSD_TRACE_RATIO`       | `0.0`            | OpenTelemetry sample ratio (`0` disables)                |
 | `--enable-persistence`| `TSD_ENABLE_PERSISTENCE`| `false`          | Enable write-ahead log persistence for crash recovery    |
 | `--persistence-dir`   | `TSD_PERSISTENCE_DIR`   | _(platform)_     | Directory for WAL data files                             |
+| `--tls-cert`          | `TSD_TLS_CERT`           | _(none)_         | TLS certificate path; watched for automatic rotation     |
+| `--tls-key`           | `TSD_TLS_KEY`            | _(none)_         | TLS private key path; watched for automatic rotation     |
+| `--tls-ca`            | `TSD_TLS_CA`             | _(none)_         | Client CA path for mTLS; watched for automatic rotation  |
 | `--shutdown-timeout`  | `TSD_SHUTDOWN_TIMEOUT`  | `10s`            | Max wait for graceful shutdown on SIGINT/SIGTERM         |
 
 Runtime tuning (environment only): `TSD_GC_PERCENT` (default `-1`, GC off for a zero‑GC hot
 path), `TSD_MEM_LIMIT_BYTES` (soft heap ceiling), `TSD_ENABLE_PROFILING` (serves `pprof` on
 `127.0.0.1:6060`).
+
+When TLS is enabled, Tellstone watches the parent directories of the certificate, key, and
+optional client CA. Valid replacements are applied to new connections after a 500 ms debounce;
+existing TLS connections continue uninterrupted. Directory watching supports atomic file renames
+and Kubernetes projected Secret updates.
 
 ---
 

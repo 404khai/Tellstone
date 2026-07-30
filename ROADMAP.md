@@ -13,7 +13,7 @@ runs plaintext TCP with no access control — a non-starter for any real deploym
 
 - [x] TLS 1.3 support for both binary and RESP2 listeners (`--tls-cert`, `--tls-key`, `--tls-ca`)
 - [x] mTLS (mutual TLS) for service-to-service authentication in Kubernetes
-- [ ] Automatic certificate rotation via filesystem watcher or Kubernetes Secret projection
+- [x] Automatic certificate rotation via filesystem watcher or Kubernetes Secret projection
 - [ ] STARTTLS upgrade path for RESP connections (graceful upgrade from plaintext)
 
 ### 2b — Authentication & Authorization

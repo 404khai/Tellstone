@@ -7,10 +7,12 @@ file paths. Supports TLS 1.3 and optional mTLS.
 package tls
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
 	"fmt"
 	"net"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/panjf2000/gnet/v2"
@@ -73,22 +75,79 @@ func (a *GnetConnAdapter) InboundBuffered() int {
 	return a.c.InboundBuffered()
 }
 
+// ConfigStore publishes immutable TLS configurations to protocol listeners.
+// Existing connections retain the configuration loaded when they were accepted;
+// new connections observe the latest configuration after an atomic replacement.
+type ConfigStore struct {
+	current atomic.Pointer[Config]
+}
+
+// NewConfigStore returns a store initialized with cfg. A nil configuration is
+// rejected because a reload must never downgrade an encrypted listener to plaintext.
+func NewConfigStore(cfg *Config) (*ConfigStore, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("tls: config store requires a non-nil config")
+	}
+	store := new(ConfigStore)
+	store.current.Store(cfg)
+	return store, nil
+}
+
+// Load returns the immutable configuration used for the next accepted connection.
+func (s *ConfigStore) Load() *Config {
+	if s == nil {
+		return nil
+	}
+	return s.current.Load()
+}
+
+// Store atomically publishes cfg for future connections.
+func (s *ConfigStore) Store(cfg *Config) error {
+	if s == nil || cfg == nil {
+		return fmt.Errorf("tls: cannot store a nil config")
+	}
+	s.current.Store(cfg)
+	return nil
+}
+
 // BuildConfig constructs a *Config from cert/key/CA file paths.
 // If certPath and keyPath are empty, returns (nil, nil) to signal TLS is disabled.
 // If caPath is non-empty, client certificate verification is enabled (mTLS).
-// Forces TLS 1.3 as the minimum version.
+// Forces TLS 1.3 as the minimum and maximum version.
 func BuildConfig(certPath, keyPath, caPath string) (*Config, error) {
+	cfg, _, err := loadConfig(certPath, keyPath, caPath)
+	return cfg, err
+}
+
+// loadConfig reads a complete TLS snapshot and returns a content fingerprint.
+// The fingerprint covers the certificate chain, private key, and optional client CA,
+// so CA-only rotations and reused certificate serials are not mistaken for no-ops.
+func loadConfig(certPath, keyPath, caPath string) (*Config, [sha256.Size]byte, error) {
+	var fingerprint [sha256.Size]byte
 	if (certPath == "") != (keyPath == "") {
-		return nil, fmt.Errorf("tls: both cert and key are required")
+		return nil, fingerprint, fmt.Errorf("tls: both cert and key are required")
 	}
 	if certPath == "" && keyPath == "" {
-		return nil, nil
+		return nil, fingerprint, nil
 	}
 
-	cert, err := LoadX509KeyPair(certPath, keyPath)
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		return nil, fmt.Errorf("tls: failed to load certificate/key: %w", err)
+		return nil, fingerprint, fmt.Errorf("tls: failed to read certificate file: %w", err)
 	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fingerprint, fmt.Errorf("tls: failed to read key file: %w", err)
+	}
+	cert, err := X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fingerprint, fmt.Errorf("tls: failed to load certificate/key: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, fingerprint, fmt.Errorf("tls: failed to parse leaf certificate: %w", err)
+	}
+	cert.Leaf = leaf
 
 	cfg := &Config{
 		Certificates: []Certificate{cert},
@@ -96,20 +155,29 @@ func BuildConfig(certPath, keyPath, caPath string) (*Config, error) {
 		MaxVersion:   VersionTLS13,
 	}
 
+	var caPEM []byte
 	if caPath != "" {
-		caPEM, err := os.ReadFile(caPath)
+		caPEM, err = os.ReadFile(caPath)
 		if err != nil {
-			return nil, fmt.Errorf("tls: failed to read CA file: %w", err)
+			return nil, fingerprint, fmt.Errorf("tls: failed to read CA file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caPEM) {
-			return nil, fmt.Errorf("tls: failed to parse CA certificate")
+			return nil, fingerprint, fmt.Errorf("tls: failed to parse CA certificate")
 		}
 		cfg.ClientCAs = pool
 		cfg.ClientAuth = RequireAndVerifyClientCert
 	}
 
-	return cfg, nil
+	h := sha256.New()
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(certPEM)
+	_, _ = h.Write([]byte{1})
+	_, _ = h.Write(keyPEM)
+	_, _ = h.Write([]byte{2})
+	_, _ = h.Write(caPEM)
+	copy(fingerprint[:], h.Sum(nil))
+	return cfg, fingerprint, nil
 }
 
 // IsMTLS returns true if the config requires client certificate verification.

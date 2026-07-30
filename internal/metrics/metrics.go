@@ -131,15 +131,25 @@ func (c *Collector) writeMetric(name, mType, help string, value uint64) {
 	_, _ = c.writer.Write([]byte("\n\n"))
 }
 
+// TLSMetrics exposes process-level certificate rotation state without coupling
+// the metrics package to the concrete filesystem watcher.
+type TLSMetrics interface {
+	ReloadTotal() uint64
+	ReloadErrorsTotal() uint64
+	CertificateExpirySeconds() int64
+}
+
 type AggregateCollector struct {
 	shardCollectors []*Collector
 	networkServer   *network.Server
+	tlsMetrics      TLSMetrics
 }
 
-func NewAggregateCollector(shardCollectors []*Collector, netSrv *network.Server) *AggregateCollector {
+func NewAggregateCollector(shardCollectors []*Collector, netSrv *network.Server, tlsMetrics TLSMetrics) *AggregateCollector {
 	return &AggregateCollector{
 		shardCollectors: shardCollectors,
 		networkServer:   netSrv,
+		tlsMetrics:      tlsMetrics,
 	}
 }
 
@@ -161,4 +171,12 @@ func (ac *AggregateCollector) WritePrometheus(w io.Writer) {
 	writeRaw("tellstone_runtime_heap_alloc_bytes", "gauge", "Heap alloc bytes.", mem.HeapAlloc)
 	writeRaw("tellstone_runtime_heap_allocs_total", "counter", "Total heap allocations.", mem.Mallocs)
 	writeRaw("tellstone_runtime_gc_cycles_total", "counter", "Total GC cycles.", uint64(mem.NumGC))
+	if ac.tlsMetrics != nil {
+		writeRaw("tellstone_tls_cert_reload_total", "counter", "Successful TLS certificate reloads.", ac.tlsMetrics.ReloadTotal())
+		writeRaw("tellstone_tls_cert_reload_errors_total", "counter", "Failed TLS certificate reloads.", ac.tlsMetrics.ReloadErrorsTotal())
+		expiry := ac.tlsMetrics.CertificateExpirySeconds()
+		if expiry > 0 {
+			writeRaw("tellstone_tls_cert_expiry_seconds", "gauge", "Active TLS leaf certificate NotAfter as Unix epoch seconds.", uint64(expiry))
+		}
+	}
 }

@@ -3,6 +3,7 @@ module github.com/Saxy/Tellstone
 go 1.26.5
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-echarts/go-echarts/v2 v2.7.2
 	github.com/panjf2000/gnet/v2 v2.10.0
 	go.opentelemetry.io/otel v1.44.0

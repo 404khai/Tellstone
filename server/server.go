@@ -59,13 +59,14 @@ func (rs *RouterStore) Delete(key string) {
 }
 
 type Server struct {
-	app        *tellstone.App
-	router     *router.Router
-	shards     []*shard.Shard
-	netSrv     *network.Server
-	respSrv    *resp.Server
-	metricsSrv *http.Server
-	tlsConfig  *tlslib.Config
+	app         *tellstone.App
+	router      *router.Router
+	shards      []*shard.Shard
+	netSrv      *network.Server
+	respSrv     *resp.Server
+	metricsSrv  *http.Server
+	tlsConfigs  *tlslib.ConfigStore
+	tlsReloader *tlslib.Reloader
 }
 
 func NewServer(app *tellstone.App) *Server {
@@ -81,14 +82,19 @@ func (s *Server) Run() error {
 	if err != nil {
 		return fmt.Errorf("crypto init: %w", err)
 	}
-	var tlsCfg *tlslib.Config
+	tlsReloaderStarted := false
 	if cfg.TLSEnabled() {
-		tlsCfg, err = tlslib.BuildConfig(cfg.GetTLSCert(), cfg.GetTLSKey(), cfg.GetTLSCA())
+		s.tlsReloader, err = tlslib.NewReloader(cfg.GetTLSCert(), cfg.GetTLSKey(), cfg.GetTLSCA())
 		if err != nil {
 			return fmt.Errorf("tls config: %w", err)
 		}
+		defer func() {
+			if !tlsReloaderStarted {
+				_ = s.tlsReloader.Close()
+			}
+		}()
+		s.tlsConfigs = s.tlsReloader.Configs()
 	}
-	s.tlsConfig = tlsCfg
 	if err = s.initShards(cryptoEngine); err != nil {
 		return fmt.Errorf("shard init: %w", err)
 	}
@@ -98,7 +104,7 @@ func (s *Server) Run() error {
 		s.shards,
 		s.networkHandler,
 		logger,
-		tlsCfg,
+		s.tlsConfigs,
 		cfg.GetRequirePass(),
 	)
 	if cfg.MetricsEnabled() {
@@ -106,6 +112,24 @@ func (s *Server) Run() error {
 	}
 	if cfg.RESPEnabled() {
 		s.startRESPServer()
+	}
+
+	if s.tlsReloader != nil {
+		reloadCtx, cancelReload := context.WithCancel(context.Background())
+		tlsReloaderStarted = true
+		reloadDone := make(chan struct{})
+		go func() {
+			defer close(reloadDone)
+			if reloadErr := s.tlsReloader.Run(reloadCtx, logger); reloadErr != nil && logger.Enabled(log.LevelError) {
+				logger.Log(log.LevelError, "tls certificate watcher stopped",
+					log.String("error", reloadErr.Error()),
+				)
+			}
+		}()
+		defer func() {
+			cancelReload()
+			<-reloadDone
+		}()
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -223,7 +247,11 @@ func (s *Server) startMetricsServer(srv *network.Server) {
 	for i, sh := range s.shards {
 		shardCollectors[i] = metrics.NewShardCollector(uint32(sh.ID), sh, sh.Engine, srv, logger)
 	}
-	aggregateCollector := metrics.NewAggregateCollector(shardCollectors, srv)
+	var tlsMetrics metrics.TLSMetrics
+	if s.tlsReloader != nil {
+		tlsMetrics = s.tlsReloader
+	}
+	aggregateCollector := metrics.NewAggregateCollector(shardCollectors, srv, tlsMetrics)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -252,7 +280,7 @@ func (s *Server) startRESPServer() {
 	cfg := s.app.GetConfig()
 	logger := s.app.GetLogger()
 	store := &RouterStore{router: s.router}
-	respSrv := resp.NewServer(cfg.GetRESPAddr(), store, s.shards, logger, s.tlsConfig, cfg.GetRequirePass())
+	respSrv := resp.NewServer(cfg.GetRESPAddr(), store, s.shards, logger, s.tlsConfigs, cfg.GetRequirePass())
 	s.respSrv = respSrv
 	go func() {
 		if err := respSrv.ListenAndServe(); err != nil {
