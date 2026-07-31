@@ -31,6 +31,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const tlsHandshakeTimeout = 10 * time.Second
+
 // Store is the subset of the storage engine the RESP server needs. *storage.Engine satisfies
 // it directly, which keeps this package decoupled and easy to test with a fake.
 type Store interface {
@@ -164,7 +166,7 @@ func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 		adapter := tlslib.NewGnetConnAdapter(c)
 		st.tlsConn = tlslib.Server(adapter, tlsCfg)
 		st.readBuf = make([]byte, 0, 4096)
-		st.handshakeDeadline = time.Now().Add(10 * time.Second)
+		st.handshakeDeadline = time.Now().Add(tlsHandshakeTimeout)
 	}
 	c.SetContext(st)
 	return nil, gnet.None
@@ -408,7 +410,7 @@ func (s *Server) upgradeToTLS(c gnet.Conn, st *connState, consumed int) gnet.Act
 	adapter := tlslib.NewGnetConnAdapter(c)
 	st.tlsConn = tlslib.Server(adapter, tlsCfg)
 	st.readBuf = make([]byte, 0, 4096)
-	st.handshakeDeadline = time.Now().Add(10 * time.Second)
+	st.handshakeDeadline = time.Now().Add(tlsHandshakeTimeout)
 	st.upgradeTLS = false
 	return gnet.None
 }
@@ -427,6 +429,8 @@ func (s *Server) dispatch(st *connState, args [][]byte, out []byte) []byte {
 		return s.auth(st, args, out)
 	}
 	// STARTTLS precedes the authentication gate so credentials can remain encrypted.
+	// Its authenticated check stays in the default case below to avoid adding the
+	// optional feature branch to successful GET, SET, DEL, PING, and COMMAND dispatch.
 	if !st.authenticated {
 		if s.startTLS && EqualFold(cmd, "STARTTLS") {
 			return s.dispatchSTARTTLS(st, args, out)

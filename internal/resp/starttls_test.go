@@ -13,6 +13,7 @@ Authors:
 package resp
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -58,6 +59,33 @@ func TestRESPServer_STARTTLSBeforeAuth(t *testing.T) {
 	expectReply(t, conn, "PING after STARTTLS", "*1\r\n$4\r\nPING\r\n", "+PONG\r\n")
 	expectReply(t, conn, "repeated STARTTLS", startTLSRequest,
 		"-ERR connection is already encrypted\r\n")
+}
+
+func TestRESPServer_STARTTLSUsesRotatedCertificate(t *testing.T) {
+	addr, srv, _, _ := startRESPTLSServer(t, true, "")
+	raw := dialWithRetry(t, addr)
+
+	rotatedCertPEM, rotatedKeyPEM := generateStartTLSCertificate(t)
+	rotatedCfg := buildStartTLSConfig(t, rotatedCertPEM, rotatedKeyPEM)
+	if err := srv.tlsConfigs.Store(rotatedCfg); err != nil {
+		t.Fatalf("publish rotated TLS config: %v", err)
+	}
+
+	expectReply(t, raw, "STARTTLS after certificate rotation", startTLSRequest, "+OK\r\n")
+	conn := stdtls.Client(raw, startTLSClientConfig(t, rotatedCertPEM))
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		t.Fatalf("STARTTLS handshake with rotated certificate: %v", err)
+	}
+
+	block, _ := pem.Decode(rotatedCertPEM)
+	if block == nil {
+		t.Fatal("decode rotated certificate")
+	}
+	peerCerts := conn.ConnectionState().PeerCertificates
+	if len(peerCerts) == 0 || !bytes.Equal(peerCerts[0].Raw, block.Bytes) {
+		t.Fatal("STARTTLS did not use the latest rotated certificate")
+	}
 }
 
 func TestRESPServer_STARTTLSRejectsPipelining(t *testing.T) {
@@ -119,19 +147,7 @@ func TestRESPServer_ImplicitTLSRemainsDefault(t *testing.T) {
 func startRESPTLSServer(t *testing.T, startTLS bool, requirePass string) (string, *Server, *fakeStore, []byte) {
 	t.Helper()
 	certPEM, keyPEM := generateStartTLSCertificate(t)
-	dir := t.TempDir()
-	certPath := filepath.Join(dir, "server.crt")
-	keyPath := filepath.Join(dir, "server.key")
-	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
-		t.Fatalf("write certificate: %v", err)
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		t.Fatalf("write private key: %v", err)
-	}
-	cfg, err := tlslib.BuildConfig(certPath, keyPath, "")
-	if err != nil {
-		t.Fatalf("build TLS config: %v", err)
-	}
+	cfg := buildStartTLSConfig(t, certPEM, keyPEM)
 	configs, err := tlslib.NewConfigStore(cfg)
 	if err != nil {
 		t.Fatalf("create TLS config store: %v", err)
@@ -149,6 +165,24 @@ func startRESPTLSServer(t *testing.T, startTLS bool, requirePass string) (string
 	probe := dialWithRetry(t, addr)
 	_ = probe.Close()
 	return addr, srv, store, certPEM
+}
+
+func buildStartTLSConfig(t *testing.T, certPEM, keyPEM []byte) *tlslib.Config {
+	t.Helper()
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "server.crt")
+	keyPath := filepath.Join(dir, "server.key")
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatalf("write certificate: %v", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	cfg, err := tlslib.BuildConfig(certPath, keyPath, "")
+	if err != nil {
+		t.Fatalf("build TLS config: %v", err)
+	}
+	return cfg
 }
 
 func generateStartTLSCertificate(t *testing.T) ([]byte, []byte) {

@@ -163,7 +163,7 @@ When TLS is configured, one filesystem watcher monitors the distinct parent dire
 certificate, private key, and optional client CA. A complete replacement config is validated and
 published through a shared atomic pointer after a 500 ms debounce. Binary and implicit-TLS RESP
 listeners load the pointer when accepting a connection. With `--resp-starttls`, the RESP listener
-instead loads it when processing the upgrade, after flushing plaintext `+OK` and before reading the
+instead loads it when processing the upgrade, before writing plaintext `+OK` and before reading the
 client's TLS handshake. Established TLS connections retain their original state while later accepts
 or upgrades use the rotated material. Parent-directory watching detects direct writes, atomic
 renames, and Kubernetes projected Secret `..data` symlink swaps.
