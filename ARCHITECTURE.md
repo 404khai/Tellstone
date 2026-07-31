@@ -77,6 +77,7 @@ Tellstone is a shared-nothing, in-memory key/value store with two protocol front
 | `protocol` | `internal/protocol/` | SQL-text-to-KV translator. Parses `SELECT`/`INSERT`/`DELETE` into operations (experimental/frontend path). |
 | `persistence` | `internal/persistence/` | Per-shard append-only WAL. Crash recovery with replay, tombstone deletes, truncation of corrupted tails. |
 | `crypto` | `internal/crypto/` | ChaCha20-Poly1305 encryption. `EncryptInPlace` / `DecryptInPlace`. Pass-through mode when disabled (zero overhead). |
+| `tls` | `internal/tls/` | TLS 1.3/mTLS transport, gnet connection adapter, and automatic certificate/key/CA rotation through a shared atomic config store. |
 | `metrics` | `internal/metrics/` | Prometheus exporter. Per-shard `Collector` + `AggregateCollector` (includes Go runtime stats). Hand-written exposition text. |
 | `trace` | `internal/trace/` | OpenTelemetry wrapper. `Tracer`/`Span` interfaces with `NoOpTracer` (zero-alloc) and `OTelTracer` (OTLP/gRPC). |
 | `version` | `internal/version/` | Build-time version/commit/date via `-ldflags`. |
@@ -142,6 +143,7 @@ Every optional feature is disabled by default and has zero overhead when off:
 | Feature | Flag | Default |
 |---------|------|---------|
 | RESP protocol | `--enable-resp` | off |
+| TLS / mTLS | `--tls-cert`, `--tls-key`, `--tls-ca` | off |
 | Encryption | `--enable-encryption` | off |
 | Metrics | `--enable-metrics` | off |
 | Persistence | `--enable-persistence` | off |
@@ -152,6 +154,15 @@ Every optional feature is disabled by default and has zero overhead when off:
 Both protocol servers use **gnet** (edge-triggered epoll), not `net.Conn` per-goroutine.
 This gives Linux-level performance with multi-reactor multicore support
 (`gnet.WithMulticore(true)`).
+
+### TLS Certificate Rotation
+
+When TLS is configured, one filesystem watcher monitors the distinct parent directories of the
+certificate, private key, and optional client CA. A complete replacement config is validated and
+published through a shared atomic pointer after a 500 ms debounce. Binary and RESP listeners load
+the pointer only when accepting a connection, so established connections retain their original
+TLS state while new connections use the rotated material. Parent-directory watching detects direct
+writes, atomic renames, and Kubernetes projected Secret `..data` symlink swaps.
 
 ### Persistence (WAL)
 

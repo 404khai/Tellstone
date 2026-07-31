@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,38 @@ import (
 
 // TestCollectorEngineSnapshot verifies that the engine snapshot reflects
 // the values reported by the storage engine after a few operations.
+type fakeTLSMetrics struct {
+	reloads uint64
+	errors  uint64
+	expiry  int64
+}
+
+func (m fakeTLSMetrics) ReloadTotal() uint64             { return m.reloads }
+func (m fakeTLSMetrics) ReloadErrorsTotal() uint64       { return m.errors }
+func (m fakeTLSMetrics) CertificateExpirySeconds() int64 { return m.expiry }
+
+func TestAggregateCollectorTLSMetrics(t *testing.T) {
+	collector := NewAggregateCollector(nil, nil, fakeTLSMetrics{reloads: 2, errors: 1, expiry: 1234})
+	var output bytes.Buffer
+	collector.WritePrometheus(&output)
+	got := output.String()
+	for _, want := range []string{
+		"tellstone_tls_cert_reload_total 2",
+		"tellstone_tls_cert_reload_errors_total 1",
+		"tellstone_tls_cert_expiry_seconds 1234",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing TLS metric %q in output:\n%s", want, got)
+		}
+	}
+
+	output.Reset()
+	NewAggregateCollector(nil, nil, nil).WritePrometheus(&output)
+	if strings.Contains(output.String(), "tellstone_tls_") {
+		t.Fatalf("TLS metrics must be omitted when rotation is disabled:\n%s", output.String())
+	}
+}
+
 func TestCollectorEngineSnapshot(t *testing.T) {
 	// Create a simple storage engine with a minimal chronometer (interval 1ms, 1 slot).
 	eng := storage.NewEngine(time.Millisecond, 1, 0, log.NewNoOpLogger(), nil)

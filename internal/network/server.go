@@ -41,14 +41,14 @@ type authJob struct {
 // authenticated tracks whether the client has passed AUTH (always true when no
 // server password is configured, so the hot path is branch-predictable).
 type connState struct {
-	shardID       uint64
-	authenticated bool
-	remoteAddr    string
-	authFails     int
-	authPending   bool
+	shardID         uint64
+	authenticated   bool
+	remoteAddr      string
+	authFails       int
+	authPending     bool
 	closeAfterReply bool
-	tlsConn       *tlslib.Conn
-	readBuf       []byte
+	tlsConn         *tlslib.Conn
+	readBuf         []byte
 }
 
 type Server struct {
@@ -57,7 +57,7 @@ type Server struct {
 	handler    func(msg *Message) ([]byte, MessageType, error)
 	logger     log.Logger
 	maxMsgSize uint64
-	tlsConfig  *tlslib.Config
+	tlsConfigs *tlslib.ConfigStore
 
 	// eng and ready let Shutdown reach the running gnet engine: OnBoot fires once the event
 	// loop is accepting connections and hands us the Engine handle we need to stop it; ready
@@ -86,10 +86,11 @@ type Server struct {
 // NewServer initializes an edge-triggered networking server engine instance.
 // It applies defensive configuration defaults before spawning infrastructure.
 // shards is optional — if nil, per-shard metrics are not tracked.
-// tlsCfg is optional — if nil, plaintext TCP is used.
+// tlsConfigs is optional — if nil, plaintext TCP is used. When configured, each
+// accepted connection atomically loads the latest immutable TLS configuration.
 // requirePass is optional — if empty, AUTH is a no-op and connections start authenticated;
 // otherwise it is hashed at startup and clients must AUTH before issuing data commands.
-func NewServer(addr string, maxMsgSize uint64, shards []*shard.Shard, handler func(msg *Message) ([]byte, MessageType, error), logger log.Logger, tlsCfg *tlslib.Config, requirePass string) *Server {
+func NewServer(addr string, maxMsgSize uint64, shards []*shard.Shard, handler func(msg *Message) ([]byte, MessageType, error), logger log.Logger, tlsConfigs *tlslib.ConfigStore, requirePass string) *Server {
 	if logger == nil {
 		logger = log.NewNoOpLogger()
 	}
@@ -115,7 +116,7 @@ func NewServer(addr string, maxMsgSize uint64, shards []*shard.Shard, handler fu
 		handler:         handler,
 		logger:          logger,
 		maxMsgSize:      maxMsgSize,
-		tlsConfig:       tlsCfg,
+		tlsConfigs:      tlsConfigs,
 		ready:           make(chan struct{}),
 		shards:          shards,
 		requirePassHash: passHash,
@@ -185,9 +186,9 @@ func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 		authenticated: s.requirePassHash == nil,
 		remoteAddr:    c.RemoteAddr().String(),
 	}
-	if s.tlsConfig != nil {
+	if tlsCfg := s.tlsConfigs.Load(); tlsCfg != nil {
 		adapter := tlslib.NewGnetConnAdapter(c)
-		st.tlsConn = tlslib.Server(adapter, s.tlsConfig)
+		st.tlsConn = tlslib.Server(adapter, tlsCfg)
 		st.readBuf = make([]byte, 0, 4096)
 	}
 	c.SetContext(st)

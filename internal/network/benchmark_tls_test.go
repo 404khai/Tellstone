@@ -25,9 +25,9 @@ import (
 
 // benchServer holds a running plaintext gnet server for benchmarks.
 type benchServer struct {
-	srv    *Server
-	addr   string
-	ready  chan struct{}
+	srv   *Server
+	addr  string
+	ready chan struct{}
 }
 
 func startBenchServer(b *testing.B, handler func(msg *Message) ([]byte, MessageType, error)) *benchServer {
@@ -54,8 +54,8 @@ func startBenchServer(b *testing.B, handler func(msg *Message) ([]byte, MessageT
 
 // benchTLS server holds a running TLS gnet server for benchmarks.
 type benchTLSServer struct {
-	srv    *Server
-	addr   string
+	srv     *Server
+	addr    string
 	certPEM []byte
 	keyPEM  []byte
 }
@@ -80,6 +80,10 @@ func startBenchTLSServer(b *testing.B, handler func(msg *Message) ([]byte, Messa
 	if err != nil {
 		b.Fatalf("failed to build TLS config: %v", err)
 	}
+	tlsConfigs, err := tlslib.NewConfigStore(tlsCfg)
+	if err != nil {
+		b.Fatalf("failed to create TLS config store: %v", err)
+	}
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -88,7 +92,7 @@ func startBenchTLSServer(b *testing.B, handler func(msg *Message) ([]byte, Messa
 	addr := l.Addr().String()
 	l.Close()
 
-	srv := NewServer(addr, 0, nil, handler, log.NewNoOpLogger(), tlsCfg, "")
+	srv := NewServer(addr, 0, nil, handler, log.NewNoOpLogger(), tlsConfigs, "")
 	go func() {
 		_ = srv.ListenAndServe()
 	}()

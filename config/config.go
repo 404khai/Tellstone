@@ -258,19 +258,19 @@ func LoadConfig(args []string) *Config {
 		&cfg.tlsCert,
 		"tls-cert",
 		getEnv("TSD_TLS_CERT", ""),
-		"Path to TLS certificate file (PEM); empty disables TLS (default: none)",
+		"Path to watched TLS certificate file (PEM); empty disables TLS (default: none)",
 	)
 	fs.StringVar(
 		&cfg.tlsKey,
 		"tls-key",
 		getEnv("TSD_TLS_KEY", ""),
-		"Path to TLS private key file (PEM); required when tls-cert is set",
+		"Path to watched TLS private key file (PEM); required when tls-cert is set",
 	)
 	fs.StringVar(
 		&cfg.tlsCA,
 		"tls-ca",
 		getEnv("TSD_TLS_CA", ""),
-		"Path to CA certificate for client verification (PEM); enables mTLS when set",
+		"Path to watched CA certificate for client verification (PEM); enables mTLS when set",
 	)
 	// Optional server password enforced via the RESP AUTH command.
 	fs.StringVar(

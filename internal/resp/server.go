@@ -58,10 +58,10 @@ type connState struct {
 // Server is an edge-triggered RESP2 listener backed by gnet.
 type Server struct {
 	gnet.BuiltinEventEngine
-	addr      string
-	store     Store
-	logger    log.Logger
-	tlsConfig *tlslib.Config
+	addr       string
+	store      Store
+	logger     log.Logger
+	tlsConfigs *tlslib.ConfigStore
 	// eng and ready let Shutdown reach the running gnet engine: OnBoot fires once the event
 	// loop is accepting connections and hands us the Engine handle we need to stop it; ready
 	// is closed at that point so a concurrent Shutdown call can block until it's safe to stop.
@@ -81,10 +81,11 @@ type Server struct {
 
 // NewServer creates a RESP server bound to addr that dispatches commands to store.
 // shards is optional — if nil, per-shard metrics are not tracked.
-// tlsCfg is optional — if nil, plaintext TCP is used.
+// tlsConfigs is optional — if nil, plaintext TCP is used. When configured, each
+// accepted connection atomically loads the latest immutable TLS configuration.
 // requirePass is optional — if empty, AUTH is a no-op and connections start authenticated;
 // otherwise it is hashed once at startup and clients must AUTH before issuing commands.
-func NewServer(addr string, store Store, shards []*shard.Shard, logger log.Logger, tlsCfg *tlslib.Config, requirePass string) *Server {
+func NewServer(addr string, store Store, shards []*shard.Shard, logger log.Logger, tlsConfigs *tlslib.ConfigStore, requirePass string) *Server {
 	if logger == nil {
 		logger = log.NewNoOpLogger()
 	}
@@ -103,7 +104,7 @@ func NewServer(addr string, store Store, shards []*shard.Shard, logger log.Logge
 		store:           store,
 		shards:          shards,
 		logger:          logger,
-		tlsConfig:       tlsCfg,
+		tlsConfigs:      tlsConfigs,
 		requirePassHash: passHash,
 		ready:           make(chan struct{}),
 	}
@@ -153,9 +154,9 @@ func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 		authenticated: s.requirePassHash == nil,
 		remoteAddr:    c.RemoteAddr().String(),
 	}
-	if s.tlsConfig != nil {
+	if tlsCfg := s.tlsConfigs.Load(); tlsCfg != nil {
 		adapter := tlslib.NewGnetConnAdapter(c)
-		st.tlsConn = tlslib.Server(adapter, s.tlsConfig)
+		st.tlsConn = tlslib.Server(adapter, tlsCfg)
 		st.readBuf = make([]byte, 0, 4096)
 		st.handshakeDeadline = time.Now().Add(10 * time.Second)
 	}

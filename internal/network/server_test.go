@@ -3,14 +3,18 @@ package network
 import (
 	"bytes"
 	"context"
+	stdtls "crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Saxy/Tellstone/internal/log"
+	tlslib "github.com/Saxy/Tellstone/internal/tls"
 )
 
 // fakeStore is a minimal in-memory key-value store for testing binary protocol handlers.
@@ -146,6 +150,104 @@ func TestServerEcho(t *testing.T) {
 	}
 	if string(resp.Payload) != "pingdata" {
 		t.Fatalf("payload mismatch: got %s want %s", resp.Payload, "pingdata")
+	}
+}
+
+// TestServerTLSConfigRotation verifies that established TLS connections retain their
+// original configuration while connections accepted after publication use the replacement.
+func TestServerTLSConfigRotation(t *testing.T) {
+	certA, keyA, err := generateSelfSignedCert()
+	if err != nil {
+		t.Fatalf("generate certificate A: %v", err)
+	}
+	certB, keyB, err := generateSelfSignedCert()
+	if err != nil {
+		t.Fatalf("generate certificate B: %v", err)
+	}
+	certFileA, keyFileA, err := writeTempCertFiles(certA, keyA)
+	if err != nil {
+		t.Fatalf("write certificate A: %v", err)
+	}
+	certFileB, keyFileB, err := writeTempCertFiles(certB, keyB)
+	if err != nil {
+		t.Fatalf("write certificate B: %v", err)
+	}
+	for _, path := range []string{certFileA, keyFileA, certFileB, keyFileB} {
+		path := path
+		t.Cleanup(func() { _ = os.Remove(path) })
+	}
+
+	cfgA, err := tlslib.BuildConfig(certFileA, keyFileA, "")
+	if err != nil {
+		t.Fatalf("build config A: %v", err)
+	}
+	cfgB, err := tlslib.BuildConfig(certFileB, keyFileB, "")
+	if err != nil {
+		t.Fatalf("build config B: %v", err)
+	}
+	configs, err := tlslib.NewConfigStore(cfgA)
+	if err != nil {
+		t.Fatalf("create config store: %v", err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := listener.Addr().String()
+	_ = listener.Close()
+	srv := NewServer(addr, 0, nil, pingHandler, log.NewNoOpLogger(), configs, "")
+	go func() { _ = srv.ListenAndServe() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	if err := waitForServer(addr, 2*time.Second); err != nil {
+		t.Fatalf("server not ready: %v", err)
+	}
+
+	connA, err := stdtls.Dial("tcp", addr, clientTLSConfig(t, certA))
+	if err != nil {
+		t.Fatalf("dial with certificate A trust: %v", err)
+	}
+	defer connA.Close()
+	if got := sendAndRecv(t, connA, MsgPing, []byte("before")); got.Type != MsgPong {
+		t.Fatalf("expected pong before rotation, got %v", got.Type)
+	}
+
+	if err := configs.Store(cfgB); err != nil {
+		t.Fatalf("publish config B: %v", err)
+	}
+	if got := sendAndRecv(t, connA, MsgPing, []byte("after")); got.Type != MsgPong {
+		t.Fatalf("existing connection failed after rotation: %v", got.Type)
+	}
+
+	connB, err := stdtls.Dial("tcp", addr, clientTLSConfig(t, certB))
+	if err != nil {
+		t.Fatalf("new connection did not receive certificate B: %v", err)
+	}
+	defer connB.Close()
+	if got := sendAndRecv(t, connB, MsgPing, []byte("new")); got.Type != MsgPong {
+		t.Fatalf("expected pong on new connection, got %v", got.Type)
+	}
+
+	if staleConn, err := stdtls.Dial("tcp", addr, clientTLSConfig(t, certA)); err == nil {
+		_ = staleConn.Close()
+		t.Fatal("new connection unexpectedly trusted the rotated-out certificate")
+	}
+}
+
+func clientTLSConfig(t *testing.T, certPEM []byte) *stdtls.Config {
+	t.Helper()
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		t.Fatal("append trusted certificate")
+	}
+	return &stdtls.Config{
+		MinVersion: stdtls.VersionTLS13,
+		MaxVersion: stdtls.VersionTLS13,
+		RootCAs:    roots,
 	}
 }
 
